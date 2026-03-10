@@ -13,7 +13,7 @@ app.use(express.json());
 
 // Configuration
 const CONFIG = {
-  PACKAGE_ID: process.env.PACKAGE_ID || '0x2166afcd79034109782f9a2a72c0d07be7fc8562c9a231a62cb621f76a01aa2e',
+  PACKAGE_ID: process.env.PACKAGE_ID || '0xffbc1d872f92494c41eb6483033a647d51c59c3f813070ea2ecf6023881376f4',
   ADMIN_WALLET: process.env.ADMIN_WALLET || '0x2957f0f19ee92eb5283bf1aa6ce7a3742ea7bc79bc9d1dc907fbbf7a11567409',
   NETWORK: process.env.SUI_NETWORK || 'mainnet',
   RPC_URL: process.env.RPC_URL || 'https://sui-mainnet-rpc.dwellir.com',
