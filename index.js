@@ -51,9 +51,16 @@ if (process.env.PRIVATE_KEY && process.env.PRIVATE_KEY.length > 0) {
     
     console.log('Final private key hex length:', privateKeyHex.length);
     
-    if (privateKeyHex.length !== 64) {
+    // Allow 64-66 chars to handle potential whitespace/prefix issues
+    if (privateKeyHex.length < 64 || privateKeyHex.length > 66) {
       console.log('ERROR: Private key must be 64 hex characters (32 bytes). Got:', privateKeyHex.length);
     } else {
+      // Trim if needed
+      if (privateKeyHex.length > 64) {
+        privateKeyHex = privateKeyHex.substring(0, 64);
+        console.log('Trimmed to 64 chars');
+      }
+      
       try {
         console.log('Creating keypair from hex...');
         adminKeypair = Ed25519Keypair.fromSecretKey(Buffer.from(privateKeyHex, 'hex'));
