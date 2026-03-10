@@ -34,7 +34,7 @@ console.log('PRIVATE_KEY length:', process.env.PRIVATE_KEY ? process.env.PRIVATE
 
 if (process.env.PRIVATE_KEY && process.env.PRIVATE_KEY.length > 0) {
   try {
-    let privateKeyHex = process.env.PRIVATE_KEY;
+    let privateKeyHex = process.env.PRIVATE_KEY.trim();
     
     console.log('Raw key starts with:', privateKeyHex.substring(0, 10));
     
