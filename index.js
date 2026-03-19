@@ -13,10 +13,16 @@ app.use(express.json());
 
 // Configuration
 const CONFIG = {
-  PACKAGE_ID: process.env.PACKAGE_ID || '0xffbc1d872f92494c41eb6483033a647d51c59c3f813070ea2ecf6023881376f4',
-  ADMIN_WALLET: process.env.ADMIN_WALLET || '0x2957f0f19ee92eb5283bf1aa6ce7a3742ea7bc79bc9d1dc907fbbf7a11567409',
-  NETWORK: process.env.SUI_NETWORK || 'mainnet',
-  RPC_URL: process.env.RPC_URL || 'https://sui-mainnet-rpc.dwellir.com',
+  PACKAGE_ID:       process.env.PACKAGE_ID      || '0x33f5afb32ff62ca1bc3fd84f10342877c77642dc5a2182b127b45e64f422b038',
+  TOKEN_REGISTRY:   process.env.TOKEN_REGISTRY  || '0x4681034db5a16a4917dc651b0a3a986700ce7e233849cf2f1317b156442560fe',
+  PLATFORM_CONFIG:  process.env.PLATFORM_CONFIG || '0x01acf33cf3bc761cf17f372d711415280f2295119cdccdedb168cb8ad62959bb',
+  STAKING_CONFIG:   '0x4ca7022cd11cbe5bd66577b1e28adca0592dd10102b85e12cd8c8a08796a8be9',
+  VERIFIED_HANDLES: '0xc8319ecd50205a62df84a838f7b552158b6055b1c10084e3a2007a66f8cc93d0',
+  ADMIN_WALLET:     process.env.ADMIN_WALLET    || '0x2957f0f19ee92eb5283bf1aa6ce7a3742ea7bc79bc9d1dc907fbbf7a11567409',
+  NETWORK:          process.env.SUI_NETWORK     || 'mainnet',
+  RPC_URL:          process.env.RPC_URL         || 'https://sui-mainnet-rpc.allthatnode.com',
+  QUOTE_COIN:       '0x2::sui::SUI',
+  MODULE:           'odyssey',
 };
 
 // Initialize Sui Client
@@ -38,41 +44,41 @@ if (process.env.PRIVATE_KEY && process.env.PRIVATE_KEY.length > 0) {
     
     console.log('Raw key starts with:', privateKeyHex.substring(0, 10));
     
-    // Handle Sui wallet export format (suiprivk1...)
-    if (privateKeyHex.startsWith('suiprivk1')) {
-      // Use the new decodeSuiPrivateKey function
+    // Handle ALL Sui private key formats
+    // suiprivkey1... (bech32, from sui keytool export)
+    // suiprivk1...   (older bech32 variant)
+    // 0x{hex}        (hex with prefix)
+    // {64-char hex}  (raw hex)
+    if (privateKeyHex.startsWith('suiprivk')) {
+      // Bech32 format — covers both suiprivkey1 and suiprivk1
       const decoded = decodeSuiPrivateKey(privateKeyHex);
-      privateKeyHex = Buffer.from(decoded.secretKey).toString('hex');
-      console.log('Decoded Sui wallet key to hex, length:', privateKeyHex.length);
-    } else if (privateKeyHex.startsWith('0x')) {
-      privateKeyHex = privateKeyHex.slice(2);
-      console.log('Removed 0x prefix, new length:', privateKeyHex.length);
-    }
-    
-    console.log('Final private key hex length:', privateKeyHex.length);
-    
-    // Allow 64-66 chars to handle potential whitespace/prefix issues
-    if (privateKeyHex.length < 64 || privateKeyHex.length > 66) {
-      console.log('ERROR: Private key must be 64 hex characters (32 bytes). Got:', privateKeyHex.length);
+      console.log('Decoded bech32 key, schema:', decoded.schema, 'secretKey length:', decoded.secretKey.length);
+      try {
+        adminKeypair = Ed25519Keypair.fromSecretKey(decoded.secretKey);
+        adminSigner = adminKeypair;
+        console.log('Admin wallet loaded:', adminKeypair.getPublicKey().toSuiAddress());
+      } catch (signerError) {
+        console.log('ERROR creating keypair from bech32:', signerError.message);
+      }
     } else {
-      // Trim if needed
+      // Hex format
+      if (privateKeyHex.startsWith('0x')) {
+        privateKeyHex = privateKeyHex.slice(2);
+      }
       if (privateKeyHex.length > 64) {
         privateKeyHex = privateKeyHex.substring(0, 64);
-        console.log('Trimmed to 64 chars');
       }
-      
-      try {
-        console.log('Creating keypair from hex...');
-        adminKeypair = Ed25519Keypair.fromSecretKey(Buffer.from(privateKeyHex, 'hex'));
-        console.log('Keypair created, public key:', adminKeypair.getPublicKey().toSuiAddress());
-        
-        // Use the keypair as a signer directly
-        console.log('Using keypair as signer');
-        adminSigner = adminKeypair;
-        console.log('Admin wallet loaded successfully');
-      } catch (signerError) {
-        console.log('ERROR in signer creation:', signerError.message);
-        console.log('Stack:', signerError.stack);
+      console.log('Final private key hex length:', privateKeyHex.length);
+      if (privateKeyHex.length === 64) {
+        try {
+          adminKeypair = Ed25519Keypair.fromSecretKey(Buffer.from(privateKeyHex, 'hex'));
+          adminSigner = adminKeypair;
+          console.log('Admin wallet loaded:', adminKeypair.getPublicKey().toSuiAddress());
+        } catch (signerError) {
+          console.log('ERROR in signer creation:', signerError.message);
+        }
+      } else {
+        console.log('ERROR: Unexpected key length:', privateKeyHex.length);
       }
     }
   } catch (e) {
@@ -402,16 +408,79 @@ app.get('/api/v1/memecoins/trending', async (req, res) => {
 
 app.get('/api/v1/config', (req, res) => {
   res.json({
-    packageId: CONFIG.PACKAGE_ID,
-    network: CONFIG.NETWORK,
+    packageId:       CONFIG.PACKAGE_ID,
+    module:          CONFIG.MODULE,
+    tokenRegistry:   CONFIG.TOKEN_REGISTRY,
+    platformConfig:  CONFIG.PLATFORM_CONFIG,
+    stakingConfig:   CONFIG.STAKING_CONFIG,
+    verifiedHandles: CONFIG.VERIFIED_HANDLES,
+    configId:        CONFIG.PLATFORM_CONFIG, // legacy alias
+    network:         CONFIG.NETWORK,
+    aidaContract:    '0xcee208b8ae33196244b389e61ffd1202e7a1ae06c8ec210d33402ff649038892::aida::AIDA',
+    quoteToken:      CONFIG.QUOTE_COIN,
     feeStructure: {
-      tradingFee: '2%',
-      platformFee: '45%',
-      creatorFee: '25%',
+      tradingFee:     '2%',
+      platformFee:    '45%',
+      creatorFee:     '25%',
       aidaStakersFee: '30%'
     },
-    aidaContract: '0xcee208b8ae33196244b389e61ffd1202e7a1ae06c8ec210d33402ff649038892::aida::AIDA'
+    curveDefaults: {
+      virtualLiquidity:     1000000000,
+      targetQuoteLiquidity: 10000000000,
+      minimumInitialSui:    '1 SUI'
+    }
   });
+});
+
+// =====================
+// MISSING ENDPOINTS — ADDED
+// =====================
+
+// POST /api/v1/tokens/create-v2 — called by useCreateMemecoin.js
+app.post('/api/v1/tokens/create-v2', async (req, res) => {
+  try {
+    const { name, symbol, description, sender, imageUrl, xSocial, telegramSocial, website, migrationDex = 1 } = req.body;
+    if (!name || !symbol) return res.status(400).json({ error: 'name and symbol required' });
+    const tokenId = `${symbol.toLowerCase()}_${Date.now()}`;
+    tokens.set(tokenId, { id: tokenId, name, symbol: symbol.toUpperCase(), description, imageUrl, creator: sender, xSocial, telegramSocial, website, migrationDex, createdAt: new Date().toISOString(), status: 'pending' });
+    res.json({
+      success: true, step: 1, tokenId, creator: sender,
+      contractConfig: {
+        packageId: CONFIG.PACKAGE_ID, module: CONFIG.MODULE,
+        tokenRegistry: CONFIG.TOKEN_REGISTRY, platformConfig: CONFIG.PLATFORM_CONFIG,
+        stakingConfig: CONFIG.STAKING_CONFIG, verifiedHandles: CONFIG.VERIFIED_HANDLES,
+      },
+      instructions: {
+        step1: 'Publish your coin module to get TreasuryCap',
+        step2: `POST back to /tokens/create-v2 with { treasuryCapId, tokenType }`,
+        step3: `Call odyssey::create_pool with TreasuryCap and ${CONFIG.TOKEN_REGISTRY}`,
+      }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/v1/tokens/confirm — called after on-chain pool creation
+app.post('/api/v1/tokens/confirm', async (req, res) => {
+  try {
+    const { tokenId, poolId, tokenType, transactionDigest, creator } = req.body;
+    if (!poolId) return res.status(400).json({ error: 'poolId required' });
+    const existing = tokens.get(tokenId) || {};
+    const confirmed = { ...existing, ca: poolId, poolId, tokenType, transactionDigest, creator: creator || existing.creator, status: 'live', confirmedAt: new Date().toISOString() };
+    tokens.set(poolId, confirmed);
+    if (tokenId) tokens.set(tokenId, confirmed);
+    res.json({ success: true, token: confirmed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/v1/memecoins/create — alias called by CreateCoin.jsx
+app.post('/api/v1/memecoins/create', async (req, res) => {
+  try {
+    const { name, ticker, desc, creator, image, xSocial, telegramSocial, websiteUrl, dex, coinAddress } = req.body;
+    const tokenId = `${ticker?.toLowerCase()}_${Date.now()}`;
+    const tokenData = { id: tokenId, name, symbol: ticker?.toUpperCase(), description: desc, imageUrl: image, creator, xSocial, telegramSocial, website: websiteUrl, dex, tokenType: coinAddress, createdAt: new Date().toISOString(), status: 'pending', marketCap: 0, liquidity: 0, volume24h: 0, curveProgress: 0, holders: 0 };
+    tokens.set(tokenId, tokenData);
+    res.json({ success: true, tokenId, contractConfig: { packageId: CONFIG.PACKAGE_ID, module: CONFIG.MODULE, tokenRegistry: CONFIG.TOKEN_REGISTRY }, message: 'Registered. Use create_pool with TreasuryCap to go live.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Health check
@@ -462,17 +531,22 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'TheOdyssey.fun API',
-    version: '1.0.0',
+    version: '2.0.0',
     status: 'ok',
+    contractModule: 'odyssey',
+    packageId: CONFIG.PACKAGE_ID,
     endpoints: {
-      health: '/health',
-      config: '/api/v1/config',
-      register: 'POST /api/v1/auth/register',
-      createToken: 'POST /api/v1/tokens/create',
-      tokenStats: 'GET /api/v1/tokens/:address/stats',
-      trade: 'POST /api/v1/tokens/:address/trade',
-      allTokens: 'GET /api/v1/memecoins/all',
-      trending: 'GET /api/v1/memecoins/trending'
+      health:       'GET  /health',
+      config:       'GET  /api/v1/config',
+      register:     'POST /api/v1/auth/register',
+      createLegacy: 'POST /api/v1/tokens/create',
+      createV2:     'POST /api/v1/tokens/create-v2',
+      confirmToken: 'POST /api/v1/tokens/confirm',
+      createAlias:  'POST /api/v1/memecoins/create',
+      tokenStats:   'GET  /api/v1/tokens/:address/stats',
+      trade:        'POST /api/v1/tokens/:address/trade',
+      allTokens:    'GET  /api/v1/memecoins/all',
+      trending:     'GET  /api/v1/memecoins/trending'
     }
   });
 });
