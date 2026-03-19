@@ -459,6 +459,79 @@ app.post('/api/v1/tokens/create-v2', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/**
+ * POST /api/v1/tokens/auto-create
+ * Fully automated token creation - backend handles coin module publish
+ */
+app.post('/api/v1/tokens/auto-create', async (req, res) => {
+  try {
+    const { name, symbol, description = '', imageUrl = '', xSocial = '', telegramSocial = '', website = '', migrationDex = 1, initialSuiAmount = 1, creator } = req.body;
+
+    if (!name || !symbol) return res.status(400).json({ error: 'name and symbol are required' });
+    if (!adminSigner) return res.status(500).json({ error: 'Admin wallet not configured - cannot auto-publish' });
+
+    const timestamp = Date.now();
+    const moduleName = `mc_${symbol.toLowerCase().replace(/[^a-z0-9]/g, '')}${timestamp % 10000}`;
+    const structName = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const publisherAddress = adminKeypair.getPublicKey().toSuiAddress();
+
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const { execSync } = require('child_process');
+    const tempDir = path.join(os.tmpdir(), `odyssey_coin_${timestamp}`);
+    fs.mkdirSync(path.join(tempDir, 'sources'), { recursive: true });
+
+    fs.writeFileSync(path.join(tempDir, 'sources', `${moduleName}.move`), `module ${moduleName}::${structName} {
+    use sui::coin;
+    use sui::transfer;
+    use sui::tx_context::TxContext;
+    use std::option;
+    public struct ${structName} has drop {}
+    fun init(witness: ${structName}, ctx: &mut TxContext) {
+        let (treasury, metadata) = coin::create_currency<${structName}>(witness, 6, b"${symbol.toUpperCase()}", b"${symbol}", b"${description.substring(0, 100)}", option::none(), ctx);
+        transfer::public_freeze_object(metadata);
+        transfer::public_transfer(treasury, tx_context::sender(ctx))
+    }
+}`);
+
+    fs.writeFileSync(path.join(tempDir, 'Move.toml'), `[package]\nname = "${moduleName}"\nversion = "0.0.1"\n`);
+
+    try {
+      execSync(`cd "${tempDir}" && sui move build --json 2>&1`, { encoding: 'utf8', timeout: 60000 });
+    } catch (e) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return res.status(500).json({ error: 'Failed to compile coin module', details: e.stdout });
+    }
+
+    let publishOutput;
+    try {
+      publishOutput = execSync(`cd "${tempDir}" && sui client publish --json --gas-budget 500000000 --sender ${publisherAddress} . 2>&1`, { encoding: 'utf8', timeout: 120000 });
+    } catch (e) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return res.status(500).json({ error: 'Failed to publish coin module', details: e.stdout });
+    }
+
+    let packageId = null, treasuryCapId = null;
+    try {
+      const result = JSON.parse(publishOutput);
+      for (const change of result.objectChanges || []) {
+        if (change.type === 'published') packageId = change.packageId;
+        if (change.type === 'created' && change.objectType?.includes('TreasuryCap')) treasuryCapId = change.objectId;
+      }
+    } catch (e) { /* ignore */ }
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    if (!packageId || !treasuryCapId) return res.status(500).json({ error: 'Failed to extract package/treasury' });
+
+    const tokenType = `${packageId}::${structName}::${structName}`;
+    const tokenId = `${symbol.toLowerCase()}_${timestamp}`;
+    tokens.set(tokenId, { id: tokenId, name, symbol: symbol.toUpperCase(), description, imageUrl, creator: creator || publisherAddress, packageId, treasuryCapId, tokenType, status: 'auto_created' });
+
+    res.json({ success: true, tokenId, packageId, treasuryCapId, moduleName, structName, tokenType, message: 'Coin published! Build create_pool PTB with ptbInstructions', ptbInstructions: { packageId: CONFIG.PACKAGE_ID, module: 'odyssey', function: 'create_pool', typeArguments: [tokenType, CONFIG.QUOTE_COIN], arguments: { name, symbol: symbol.toUpperCase(), description, image_url: imageUrl, x_social: xSocial, telegram_social: telegramSocial, website, migration_type: migrationDex, fee_recipient_handle: null, initialQuoteMist: Math.floor(initialSuiAmount * 1e9), treasury_cap: treasuryCapId, aida_staking_pool: CONFIG.STAKING_CONFIG, virtual_liquidity: CURVE_DEFAULTS.virtualLiquidity, target_quote_liquidity: CURVE_DEFAULTS.targetQuoteLiquidity, registry: CONFIG.TOKEN_REGISTRY, verified_handles: CONFIG.VERIFIED_HANDLES } } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/v1/tokens/confirm — called after on-chain pool creation
 app.post('/api/v1/tokens/confirm', async (req, res) => {
   try {
