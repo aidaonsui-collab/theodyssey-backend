@@ -198,24 +198,39 @@ app.post('/api/v1/tokens/create', async (req, res) => {
       });
     }
     
+    // ── Token creation is done client-side by the user's wallet.
+    // The backend only registers metadata here.
+    // On-chain creation uses moonbags::create_and_lock_first_buy_with_fee
+    // via the frontend's 2-tx wallet flow.
+    const tokenId = `${(ticker||'token').toLowerCase()}_${Date.now()}`;
+    const tokenData = {
+      id: tokenId, name, symbol: ticker, description: description || '',
+      imageUrl: image || '', creator: creator || CONFIG.ADMIN_WALLET,
+      xSocial: xSocial || '', telegramSocial: telegramSocial || '',
+      websiteUrl: websiteUrl || '', streamUrl: streamUrl || '',
+      dex: dex || 'cetus', createdAt: new Date().toISOString(),
+      status: 'pending', marketCap: 0, liquidity: 0, volume24h: 0, curveProgress: 0, holders: 0,
+    };
+    tokens.set(tokenId, tokenData);
+    return res.json({
+      success: true, tokenId,
+      message: 'Metadata registered. Use wallet to complete on-chain creation.',
+      contractConfig: { packageId: CONFIG.PACKAGE_ID, module: 'moonbags', function: 'create_and_lock_first_buy_with_fee' },
+    });
+
+    // DEAD CODE BELOW — kept for reference only
     // Get gas coin for fee payment
+    if (false) {
     const coins = await suiClient.getCoins({
       owner: creator || CONFIG.ADMIN_WALLET,
       coinType: '0x2::sui::SUI',
       limit: 1,
     });
-    
     if (!coins.data || coins.data.length === 0) {
-      return res.status(400).json({ error: 'No SUI coins found for fee payment' });
+      return res.status(400).json({ error: 'No SUI coins found' });
     }
-    
     const feeCoin = coins.data[0].coinObjectId;
-    
-    // Build transaction to create token
     const txb = new TransactionBlock();
-    
-    // Call create_token function
-    // moonbags::create_token(name, ticker, description, image_url, social_x, social_telegram, social_discord, website, stream_url, fee, dex)
     txb.moveCall({
       target: `${CONFIG.PACKAGE_ID}::moonbags::create_token`,
       arguments: [
@@ -293,13 +308,13 @@ app.post('/api/v1/tokens/create', async (req, res) => {
       success: true,
       tokenAddress: tokenAddress,
       transactionDigest: result.digest,
-      name,
-      ticker,
-      message: isAgent ? 'Token created by AI agent (0 SUI fee)' : 'Token created (1 SUI fee)'
+      name, ticker,
+      message: isAgent ? 'Token created by AI agent' : 'Token created'
     });
+    } // end if(false)
   } catch (error) {
     console.error('Create token error:', error);
-    res.status(500).json({ error: error.message, details: error.stack });
+    res.status(500).json({ error: error.message });
   }
 });
 
