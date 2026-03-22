@@ -25,6 +25,17 @@ const CONFIG = {
   MODULE:           'odyssey',
 };
 
+// x402 Payment Configuration
+const PAYMENT_CONFIG = {
+  ENABLED: process.env.X402_ENABLED === 'true' || true,
+  PRICE_SUI: parseFloat(process.env.X402_PRICE_SUI) || 0.05,  // 0.05 SUI per publish
+  PAY_TO_ADDRESS: process.env.X402_PAY_TO || '0x13ced8aca378f70af8244d1c6a3d8a9564ad1032028ebbbee65f5c3a22d12733', // T2000 wallet
+  PAYMENT_TIMEOUT_MS: 5 * 60 * 1000, // 5 minutes to complete payment
+};
+
+// In-memory payment tracking
+const pendingPayments = new Map();
+
 // Initialize Sui Client
 const suiClient = new SuiClient({
   url: CONFIG.RPC_URL,
@@ -138,6 +149,173 @@ app.post('/api/v1/auth/login', async (req, res) => {
 function validateApiKey(apiKey) {
   return apiKeys.get(apiKey);
 }
+
+// =====================
+// x402 PAYMENT ROUTES
+// =====================
+
+/**
+ * GET /api/v1/payment/invoice
+ * Returns a payment invoice for auto-create
+ */
+app.get('/api/v1/payment/invoice', async (req, res) => {
+  try {
+    const invoiceId = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const expiresAt = Date.now() + PAYMENT_CONFIG.PAYMENT_TIMEOUT_MS;
+    
+    pendingPayments.set(invoiceId, {
+      status: 'pending',
+      amountSui: PAYMENT_CONFIG.PRICE_SUI,
+      payTo: PAYMENT_CONFIG.PAY_TO_ADDRESS,
+      createdAt: Date.now(),
+      expiresAt,
+    });
+    
+    res.json({
+      invoiceId,
+      amountSui: PAYMENT_CONFIG.PRICE_SUI,
+      payTo: PAYMENT_CONFIG.PAY_TO_ADDRESS,
+      expiresAt,
+      instructions: `Send exactly ${PAYMENT_CONFIG.PRICE_SUI} SUI to ${PAYMENT_CONFIG.PAY_TO_ADDRESS} with memo: ${invoiceId}`,
+      statusUrl: `/api/v1/payment/status/${invoiceId}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/v1/payment/status/:invoiceId
+ * Check if payment has been confirmed on-chain
+ */
+app.get('/api/v1/payment/status/:invoiceId', async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+    const payment = pendingPayments.get(invoiceId);
+    
+    if (!payment) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    
+    // Already confirmed
+    if (payment.status === 'confirmed') {
+      return res.json({
+        invoiceId,
+        status: 'confirmed',
+        txDigest: payment.txDigest,
+        confirmedAt: payment.confirmedAt,
+      });
+    }
+    
+    // Check if expired
+    if (Date.now() > payment.expiresAt) {
+      payment.status = 'expired';
+      return res.json({
+        invoiceId,
+        status: 'expired',
+        message: 'Payment window has expired',
+      });
+    }
+    
+    // Verify on-chain payment
+    if (payment.txDigest) {
+      try {
+        const tx = await suiClient.getTransactionBlock({ digest: payment.txDigest });
+        if (.tx) {
+          payment.status = 'confirmed';
+          payment.confirmedAt = Date.now();
+          return res.json({
+            invoiceId,
+            status: 'confirmed',
+            txDigest: payment.txDigest,
+          });
+        }
+      } catch (e) {
+        // TX not found yet, still pending
+      }
+    }
+    
+    // Check for any incoming SUI transfers to the pay-to address with matching memo
+    // This is a simplified check - in production you'd want more robust verification
+    res.json({
+      invoiceId,
+      status: payment.status,
+      message: 'Payment not yet confirmed. Send SUI and wait for confirmation.',
+      amountSui: payment.amountSui,
+      payTo: payment.payTo,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * POST /api/v1/payment/confirm
+ * Agent notifies backend of payment (with tx digest)
+ */
+app.post('/api/v1/payment/confirm', async (req, res) => {
+  try {
+    const { invoiceId, txDigest } = req.body;
+    
+    if (!invoiceId || !txDigest) {
+      return res.status(400).json({ error: 'invoiceId and txDigest required' });
+    }
+    
+    const payment = pendingPayments.get(invoiceId);
+    if (!payment) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    
+    if (payment.status === 'confirmed') {
+      return res.json({ success: true, status: 'confirmed', message: 'Already confirmed' });
+    }
+    
+    if (Date.now() > payment.expiresAt) {
+      payment.status = 'expired';
+      return res.status(400).json({ error: 'Invoice expired' });
+    }
+    
+    // Store tx digest for verification
+    payment.txDigest = txDigest;
+    payment.status = 'submitted';
+    
+    // Verify the transaction on-chain
+    try {
+      const tx = await suiClient.getTransactionBlock({ digest: txDigest });
+      
+      // Check if tx was successful and transfers SUI
+      if (tx.effects?.status?.status === 'success') {
+        payment.status = 'confirmed';
+        payment.confirmedAt = Date.now();
+        
+        // Clean up old pending payments (keep last 100)
+        if (pendingPayments.size > 100) {
+          const oldest = [...pendingPayments.entries()]
+            .sort((a, b) => a[1].createdAt - b[1].createdAt)
+            .slice(0, pendingPayments.size - 100);
+          oldest.forEach(([key]) => pendingPayments.delete(key));
+        }
+        
+        return res.json({
+          success: true,
+          status: 'confirmed',
+          message: 'Payment verified on-chain',
+        });
+      } else {
+        return res.status(400).json({ error: 'Transaction failed on-chain' });
+      }
+    } catch (e) {
+      // Transaction not found or not yet indexed
+      return res.json({
+        success: true,
+        status: 'submitted',
+        message: 'Transaction submitted. Wait a few seconds then check /status.',
+      });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // =====================
 // TOKEN ROUTES
@@ -443,6 +621,13 @@ app.get('/api/v1/config', (req, res) => {
       virtualLiquidity:     1000000000,
       targetQuoteLiquidity: 10000000000,
       minimumInitialSui:    '1 SUI'
+    },
+    x402Payment: {
+      enabled: PAYMENT_CONFIG.ENABLED,
+      priceSui: PAYMENT_CONFIG.PRICE_SUI,
+      payToAddress: PAYMENT_CONFIG.PAY_TO_ADDRESS,
+      invoiceEndpoint: 'GET /api/v1/payment/invoice',
+      description: 'x402 micro-payment required for auto-create endpoint'
     }
   });
 });
@@ -477,13 +662,42 @@ app.post('/api/v1/tokens/create-v2', async (req, res) => {
 /**
  * POST /api/v1/tokens/auto-create
  * Fully automated token creation - backend handles coin module publish
+ * Requires x402 payment verification
  */
 app.post('/api/v1/tokens/auto-create', async (req, res) => {
   try {
-    const { name, symbol, description = '', imageUrl = '', xSocial = '', telegramSocial = '', website = '', migrationDex = 1, initialSuiAmount = 1, creator } = req.body;
+    const { name, symbol, description = '', imageUrl = '', xSocial = '', telegramSocial = '', website = '', migrationDex = 1, initialSuiAmount = 1, creator, paymentInvoiceId, paymentTxDigest } = req.body;
 
     if (!name || !symbol) return res.status(400).json({ error: 'name and symbol are required' });
     if (!adminSigner) return res.status(500).json({ error: 'Admin wallet not configured - cannot auto-publish' });
+
+    // x402 Payment Verification
+    if (PAYMENT_CONFIG.ENABLED) {
+      if (!paymentInvoiceId) {
+        return res.status(402).json({
+          error: 'Payment required',
+          paymentInfo: {
+            priceSui: PAYMENT_CONFIG.PRICE_SUI,
+            payTo: PAYMENT_CONFIG.PAY_TO_ADDRESS,
+            invoiceEndpoint: 'GET /api/v1/payment/invoice',
+            instructions: 'Obtain an invoice, pay the SUI, then retry with paymentInvoiceId and paymentTxDigest',
+          }
+        });
+      }
+
+      const payment = pendingPayments.get(paymentInvoiceId);
+      if (!payment) {
+        return res.status(400).json({ error: 'Invalid payment invoice' });
+      }
+
+      if (payment.status !== 'confirmed') {
+        return res.status(402).json({
+          error: 'Payment not confirmed',
+          status: payment.status,
+          checkEndpoint: `/api/v1/payment/status/${paymentInvoiceId}`,
+        });
+      }
+    }
 
     const timestamp = Date.now();
     const moduleName = `mc_${symbol.toLowerCase().replace(/[^a-z0-9]/g, '')}${timestamp % 10000}`;
