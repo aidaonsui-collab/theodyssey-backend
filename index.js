@@ -22,7 +22,7 @@ const CONFIG = {
   NETWORK:          process.env.SUI_NETWORK     || 'mainnet',
   RPC_URL:          process.env.RPC_URL         || 'https://sui-mainnet-rpc.allthatnode.com',
   QUOTE_COIN:       '0x2::sui::SUI',
-  MODULE:           'odyssey',
+  MODULE:           'moonbags',
 };
 
 // x402 Payment Configuration
